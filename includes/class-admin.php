@@ -4,11 +4,10 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 class SCP_Admin {
     private $crawler;
     private $cron;
-    private $logger; // Thêm logger
+    private $logger;
     private $opt_src = 'scp_sources';
     private $opt_fb  = 'scp_fb_settings';
 
-    // Constructor nhận Logger
     public function __construct( $crawler_instance, $logger_instance ) {
         $this->crawler = $crawler_instance;
         $this->logger  = $logger_instance;
@@ -22,12 +21,13 @@ class SCP_Admin {
     }
 
     public function actions() {
-        // ... (Giữ nguyên các hành động cũ: Save FB, Add Src, Del Src, Start/Stop) ...
+        // ... (Giữ nguyên Save FB, Add Src, Del Src, Start/Stop) ...
         if ( isset( $_POST['scp_save_fb'] ) && check_admin_referer( 'scp_fb', 'nonce' ) ) {
             update_option( $this->opt_fb, [ 'page_id' => sanitize_text_field( $_POST['pid'] ), 'access_token' => sanitize_textarea_field( $_POST['token'] ) ]);
             wp_redirect( admin_url('admin.php?page=smart-crawler-pro') ); exit;
         }
         if ( isset( $_POST['scp_add_src'] ) && check_admin_referer( 'scp_src', 'nonce' ) ) {
+            // (Bulk Add Code)
             $s = get_option( $this->opt_src, [] );
             $raw_input = $_POST['urls']; $cat_id = intval( $_POST['cat'] );
             $lines = preg_split( '/\r\n|[\r\n]/', $raw_input ); $lines = array_unique( $lines );
@@ -35,8 +35,7 @@ class SCP_Admin {
             foreach ( $lines as $line ) {
                 $url = trim( $line ); if ( empty( $url ) ) continue;
                 if ( filter_var($url, FILTER_VALIDATE_URL) ) {
-                    $exists = false;
-                    foreach ($s as $existing) { if ( untrailingslashit($existing['url']) === untrailingslashit($url) ) { $exists = true; break; } }
+                    $exists = false; foreach ($s as $existing) { if ( untrailingslashit($existing['url']) === untrailingslashit($url) ) { $exists = true; break; } }
                     if ( ! $exists ) { $s[] = [ 'url' => $url, 'cat_id' => $cat_id, 'current_page' => 1, 'last_count' => 0, 'added_date' => current_time('mysql') ]; $added_count++; }
                 }
             }
@@ -54,36 +53,35 @@ class SCP_Admin {
             wp_clear_scheduled_hook('scp_cron_batch_event'); update_option('scp_crawler_state', ['is_running' => false, 'log' => 'Đã dừng thủ công.']);
             wp_redirect( admin_url('admin.php?page=smart-crawler-pro&status=stopped') ); exit;
         }
-        if ( isset( $_POST['scp_recheck_media'] ) ) {
-            $result = $this->crawler->fix_broken_media( 10 );
-            $msg = "Đã rà soát 10 bài. Sửa: " . $result['count'] . " bài.";
-            set_transient('scp_recheck_msg', $msg, 60);
-            wp_redirect( admin_url('admin.php?page=smart-crawler-pro') ); exit;
+        if ( isset( $_POST['scp_clear_logs'] ) ) {
+            $this->logger->clear_logs(); wp_redirect( admin_url('admin.php?page=smart-crawler-pro&msg=logs_cleared') ); exit;
         }
 
-        // --- HÀNH ĐỘNG MỚI: XÓA LOG ---
-        if ( isset( $_POST['scp_clear_logs'] ) ) {
-            $this->logger->clear_logs();
-            wp_redirect( admin_url('admin.php?page=smart-crawler-pro&msg=logs_cleared') ); exit;
+        // --- TÍNH NĂNG RECHECK NÂNG CAO ---
+        if ( isset( $_POST['scp_recheck_media'] ) ) {
+            $limit = intval( $_POST['recheck_limit'] );
+            if ($limit <= 0) $limit = 10;
+            
+            $result = $this->crawler->fix_broken_media( $limit );
+            
+            $msg = "Đã rà soát {$limit} bài gần nhất. Đã sửa lỗi Media cho: " . $result['count'] . " bài.";
+            set_transient('scp_recheck_msg', $msg, 60);
+            wp_redirect( admin_url('admin.php?page=smart-crawler-pro') ); exit;
         }
     }
 
     public function view() {
-        $srcs  = get_option( $this->opt_src, [] );
-        $fb    = get_option( $this->opt_fb, [] );
+        $srcs = get_option( $this->opt_src, [] );
+        $fb   = get_option( $this->opt_fb, [] );
         $state = get_option( 'scp_crawler_state', [] );
         $is_running = isset($state['is_running']) && $state['is_running'];
         $recheck_msg = get_transient('scp_recheck_msg');
-        
-        // Lấy Logs
         $logs = $this->logger->get_logs( 50 );
         $log_count = $this->logger->count_errors();
 
-        // (Phần hiển thị thông báo giữ nguyên)
-        if ( $recheck_msg ) { echo '<div class="notice notice-warning is-dismissible"><p>' . esc_html($recheck_msg) . '</p></div>'; delete_transient('scp_recheck_msg'); }
+        if ( $recheck_msg ) { echo '<div class="notice notice-success is-dismissible"><p>' . esc_html($recheck_msg) . '</p></div>'; delete_transient('scp_recheck_msg'); }
         if ( isset($_GET['added']) ) echo '<div class="notice notice-success is-dismissible"><p>Đã thêm <strong>'.intval($_GET['added']).'</strong> nguồn.</p></div>';
         if ( isset($_GET['status']) && $_GET['status']=='started' ) echo '<div class="notice notice-info is-dismissible"><p><strong>Hệ thống đang chạy!</strong></p></div>';
-        if ( isset($_GET['msg']) && $_GET['msg']=='logs_cleared' ) echo '<div class="notice notice-success is-dismissible"><p>Đã xóa sạch nhật ký lỗi.</p></div>';
         ?>
         <style>
             .scp-card { background: #fff; border: 1px solid #ccd0d4; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 1px rgba(0,0,0,.04); }
@@ -91,9 +89,8 @@ class SCP_Admin {
             .scp-status-running { border-left-color: #00a32a; background: #edfaef; }
             .scp-table-wrapper { overflow-x: auto; border: 1px solid #e5e5e5; }
             .scp-table { width: 100%; border-collapse: collapse; }
-            .scp-table th, .scp-table td { padding: 12px 10px; text-align: left; border-bottom: 1px solid #eee; font-size: 13px;}
-            .col-url { width: 45%; word-break: break-all; } 
-            .col-action { width: 15%; text-align: right; }
+            .scp-table th, .scp-table td { padding: 12px 10px; text-align: left; border-bottom: 1px solid #eee; }
+            .col-url { width: 45%; word-break: break-all; } .col-action { width: 15%; text-align: right; }
             .scp-flex-row { display: flex; gap: 20px; flex-wrap: wrap; } .scp-col { flex: 1; min-width: 300px; }
             h2.scp-title { margin-top: 0; border-bottom: 1px solid #eee; padding-bottom: 15px; margin-bottom: 20px; font-size: 1.3em; }
             .scp-log-box { background: #fff; border: 1px solid #ddd; padding: 10px; font-family: monospace; color: #555; margin-top: 5px; max-height: 100px; overflow-y: auto; }
@@ -101,7 +98,7 @@ class SCP_Admin {
         </style>
 
         <div class="wrap">
-            <h1 class="wp-heading-inline">Smart Crawler Pro (V18 Logger)</h1>
+            <h1 class="wp-heading-inline">Smart Crawler Pro (V19 - Fix Update)</h1>
             <hr class="wp-header-end">
             
             <div class="scp-card <?php echo $is_running ? 'scp-status-running' : 'scp-status-box'; ?>">
@@ -111,11 +108,18 @@ class SCP_Admin {
                         <p><strong>Tình trạng:</strong> <?php echo $is_running ? '<span style="color:#00a32a;font-weight:bold">⚡ ĐANG CHẠY</span>' : '💤 Đang nghỉ'; ?></p>
                         <p><strong>Tiến độ:</strong> Nguồn #<?php echo isset($state['source_index'])?$state['source_index'] + 1 : 0; ?></p>
                         <div class="scp-log-box"><?php echo isset($state['log']) ? $state['log'] : '-'; ?></div>
+                        
                         <div style="margin-top: 15px; padding-top: 10px; border-top: 1px dashed #ccc;">
-                            <strong>Công cụ sửa lỗi:</strong>
+                            <strong>Công cụ sửa lỗi (Recheck):</strong>
                             <form method="post" style="display:inline-block; margin-left: 10px;">
-                                <button name="scp_recheck_media" class="button button-small">🛠️ Rà soát & Tải lại Media (10 bài)</button>
+                                <select name="recheck_limit" style="vertical-align: top;">
+                                    <option value="10">10 bài gần nhất</option>
+                                    <option value="50">50 bài gần nhất</option>
+                                    <option value="100">100 bài gần nhất</option>
+                                </select>
+                                <button name="scp_recheck_media" class="button button-small">🛠️ Quét & Tải lại Media</button>
                             </form>
+                            <p class="description">Chức năng này sẽ quét các bài đã crawl, tìm media link ngoài và tải lại về host.</p>
                         </div>
                     </div>
                     <div>
@@ -172,36 +176,21 @@ class SCP_Admin {
 
             <div class="scp-card" style="border-left: 4px solid #d63638;">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <h2 class="scp-title" style="margin-bottom: 0; border: none; color: #d63638;">
-                        <span class="dashicons dashicons-warning"></span> Nhật ký lỗi Media (<?php echo $log_count; ?>)
-                    </h2>
-                    <form method="post" onsubmit="return confirm('Xóa sạch nhật ký?');">
-                        <button name="scp_clear_logs" class="button button-secondary">Xóa sạch Log</button>
-                    </form>
+                    <h2 class="scp-title" style="margin-bottom: 0; border: none; color: #d63638;">Nhật ký lỗi Media (<?php echo $log_count; ?>)</h2>
+                    <form method="post" onsubmit="return confirm('Xóa sạch?');"><button name="scp_clear_logs" class="button button-secondary">Xóa Log</button></form>
                 </div>
-                <p class="description">Danh sách các file không tải được (50 mục gần nhất).</p>
-                
                 <?php if(empty($logs)): ?>
-                    <p><i>Hiện chưa có lỗi nào được ghi nhận.</i></p>
+                    <p><i>Hiện chưa có lỗi nào.</i></p>
                 <?php else: ?>
                     <div class="scp-table-wrapper">
                         <table class="scp-table widefat striped">
-                            <thead>
-                                <tr>
-                                    <th>Thời gian</th>
-                                    <th>Bài viết (ID)</th>
-                                    <th>Link Media</th>
-                                    <th>Nguyên nhân lỗi</th>
-                                </tr>
-                            </thead>
+                            <thead><tr><th>Thời gian</th><th>Bài viết</th><th>Link Media</th><th>Lỗi</th></tr></thead>
                             <tbody>
                                 <?php foreach($logs as $log): ?>
                                 <tr>
                                     <td><?php echo $log['created_at']; ?></td>
                                     <td><a href="<?php echo get_edit_post_link($log['post_id']); ?>" target="_blank">#<?php echo $log['post_id']; ?></a></td>
-                                    <td style="max-width: 300px; word-break: break-all; font-size: 11px;">
-                                        <a href="<?php echo esc_url($log['media_url']); ?>" target="_blank"><?php echo esc_html($log['media_url']); ?></a>
-                                    </td>
+                                    <td style="max-width: 300px; word-break: break-all; font-size: 11px;"><a href="<?php echo esc_url($log['media_url']); ?>" target="_blank"><?php echo esc_html($log['media_url']); ?></a></td>
                                     <td class="log-error"><strong><?php echo esc_html($log['error_code']); ?></strong>: <?php echo esc_html($log['error_message']); ?></td>
                                 </tr>
                                 <?php endforeach; ?>
@@ -210,7 +199,6 @@ class SCP_Admin {
                     </div>
                 <?php endif; ?>
             </div>
-
         </div>
         <?php
     }
